@@ -13,7 +13,7 @@ const int SENSOR_IR2 = 34;
 const int botao = 25;
 const int buzzer = 26;
 
-int velocidade = 96;
+int velocidade = 120;
 int velocidadeCurva = 150;
 
 // //Robo Franciele
@@ -38,7 +38,7 @@ int velocidadeCurva = 150;
 
 const int IR_LINHA = HIGH;
 
-String rotaTexto = "frente, direita, frente, frente, frente, parar";
+String rotaTexto = "frente, frente, frente, esquerda, retorno, esquerda, esquerda, parar";
 
 const int MAX_COMANDOS = 20;
 String comandos[MAX_COMANDOS];
@@ -46,13 +46,13 @@ String comandos[MAX_COMANDOS];
 int totalComandos = 0;
 int comandoAtual = 0;
 
-int tempoPassarIntersecao = 300;
+int tempoPassarIntersecao = 200;
 
 int tempoFrenteAntesCurvaEsquerda = 300;
-int tempoCurvaEsquerda = 700;
+int tempoCurvaEsquerda = 400;
 
 int tempoFrenteAntesCurvaDireita = 300;
-int tempoCurvaDireita = 700;
+int tempoCurvaDireita = 400;
 
 void setup() {
   Serial.begin(115200);
@@ -87,14 +87,12 @@ void setup() {
 
   Serial.println("Aguardando botao para iniciar...");
 
-  // while (digitalRead(botao) == HIGH) {
-  //   parar();
-  // }
+  while (digitalRead(botao) == HIGH) {
+    parar();
+  }
 
 
   Serial.println("Comecando a andar...");
-
-  
 }
 
 void loop() {
@@ -162,9 +160,9 @@ void loop() {
 
   else {
     frente();
-    delay(50);
+    delay(70);
     parar();
-    delay(20);
+    delay(50);
     Serial.println("Linha perdida / seguindo em frente");
   }
 }
@@ -220,6 +218,11 @@ void executarComando(String comando) {
     parar();
     delay(200);
     virarEsquerda(tempoFrenteAntesCurvaEsquerda, tempoCurvaEsquerda);
+  }
+  else if(comando == "retorno"){
+    parar();
+    delay(200);
+    virarEsquerda(0, 2*tempoCurvaEsquerda);
   }
 
   else if (comando == "parar") {

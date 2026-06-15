@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Grafo Real dos Robôs ESP32 MQTT</title>
 
-  <script src="https://unpkg.com/paho-mqtt@1.1.0/paho-mqtt-min.js"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 
   <style>
     * {
@@ -57,7 +57,7 @@
 
     .info {
       display: grid;
-      grid-template-columns: repeat(6, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 14px;
       margin-bottom: 18px;
     }
@@ -83,6 +83,11 @@
       line-height: 1.4;
       word-break: break-word;
     }
+
+    .status-ok { color: #00ffd0 !important; }
+    .status-rota { color: #b5ff6a !important; }
+    .status-parado { color: #ffd166 !important; }
+    .status-off { color: #ff8a8a !important; }
 
     .controls {
       display: flex;
@@ -302,19 +307,34 @@
       </div>
 
       <div class="card">
-        <span>Status MQTT</span>
-        <strong id="mqttStatusCard">Desconectado</strong>
+        <span>Status MQTT da página</span>
+        <strong id="mqttStatusCard" class="status-off">Desconectado</strong>
       </div>
 
       <div class="card">
-        <span>Status do robô</span>
+        <span>Status Samuel</span>
+        <strong id="statusSamuelCard" class="status-off">Aguardando status</strong>
+      </div>
+
+      <div class="card">
+        <span>Status Franciele</span>
+        <strong id="statusFrancieleCard" class="status-off">Aguardando status</strong>
+      </div>
+
+      <div class="card">
+        <span>Última ação</span>
         <strong id="roboStatus">Aguardando status</strong>
       </div>
     </div>
 
     <div class="controls">
       <button onclick="conectarMQTT()">Conectar MQTT</button>
-      <button onclick="enviarRotaMQTT()">Enviar rota para robô</button>
+      <button onclick="enviarRotaParaRobo('robo1')">Enviar rota Samuel</button>
+      <button onclick="enviarRotaParaRobo('robo2')">Enviar rota Franciele</button>
+      <button onclick="enviarRotaParaTodos()">Enviar rota para os 2 robôs</button>
+      <button onclick="enviarPararParaRobo('robo1')">PARAR Samuel</button>
+      <button onclick="enviarPararParaRobo('robo2')">PARAR Franciele</button>
+      <button onclick="enviarPararParaTodos()">Enviar PARAR para os 2</button>
       <button onclick="limparSelecao()">Limpar</button>
       <button onclick="simular('A', 'I')">A → I</button>
       <button onclick="simular('I', 'B')">I → B</button>
@@ -418,12 +438,13 @@
 
   <div class="mqtt-box">
     Status MQTT: <code id="mqttStatus">Desconectado</code><br>
-    Broker: <code>broker.emqx.io</code><br>
-    Tópico de comandos: <code>robos/robo1/comandos</code><br>
-    Tópico JSON: <code>robos/robo1/rota</code><br>
-    Tópico de status do robô: <code>robos/robo1/status</code><br>
+    Broker: <code id="brokerInfo">ws://broker.emqx.io:8083/mqtt</code><br>
+    Tópicos Samuel: <code>robos/robo1/comandos</code> | <code>robos/robo1/status</code><br>
+    Tópicos Franciele: <code>robos/robo2/comandos</code> | <code>robos/robo2/status</code><br>
     Último envio: <code id="ultimoEnvio">Nenhum</code><br>
-    Última mensagem recebida: <code id="ultimaMensagemRecebida">Nenhuma</code>
+    Última mensagem recebida: <code id="ultimaMensagemRecebida">Nenhuma</code><br>
+    Status Samuel: <code id="statusSamuel">Aguardando status</code><br>
+    Status Franciele: <code id="statusFranciele">Aguardando status</code>
   </div>
 
   <script>
@@ -466,6 +487,25 @@
       P4: { x: 610, y: 207.5 }
     };
 
+    const robos = {
+      robo1: {
+        nome: "Samuel",
+        topicoComandos: "robos/robo1/comandos",
+        topicoRota: "robos/robo1/rota",
+        topicoStatus: "robos/robo1/status",
+        statusId: "statusSamuel",
+        statusCardId: "statusSamuelCard"
+      },
+      robo2: {
+        nome: "Franciele",
+        topicoComandos: "robos/robo2/comandos",
+        topicoRota: "robos/robo2/rota",
+        topicoStatus: "robos/robo2/status",
+        statusId: "statusFranciele",
+        statusCardId: "statusFrancieleCard"
+      }
+    };
+
     let origem = null;
     let destino = null;
     let ultimoCaminho = [];
@@ -474,16 +514,54 @@
     let mqttClient = null;
     let mqttConectado = false;
 
-    const MQTT_HOST = "broker.emqx.io";
-    const MQTT_PORT = 8084;
-    const MQTT_PATH = "/mqtt";
-    const TOPICO_COMANDOS = "robos/robo1/comandos";
-    const TOPICO_ROTA = "robos/robo1/rota";
-    const TOPICO_STATUS = "robos/robo1/status";
+    const broker = window.location.protocol === "https:"
+      ? "wss://broker.emqx.io:8084/mqtt"
+      : "ws://broker.emqx.io:8083/mqtt";
+
+    document.getElementById("brokerInfo").textContent = broker;
 
     function atualizarStatusMQTT(texto) {
       document.getElementById("mqttStatus").textContent = texto;
-      document.getElementById("mqttStatusCard").textContent = texto;
+      const card = document.getElementById("mqttStatusCard");
+      card.textContent = texto;
+      card.classList.remove("status-ok", "status-off");
+      card.classList.add(texto === "Conectado" ? "status-ok" : "status-off");
+    }
+
+    function classificarStatusRobo(payload) {
+      const texto = String(payload || "").toLowerCase();
+
+      if (texto.includes("rota recebida") || texto.includes("iniciando") || texto.includes("executando") || texto.includes("proximo comando") || texto.includes("intersecao")) {
+        return { texto: "Em rota", classe: "status-rota" };
+      }
+
+      if (texto.includes("aguardando")) {
+        return { texto: "Conectado e aguardando rota", classe: "status-ok" };
+      }
+
+      if (texto.includes("parado") || texto.includes("parar") || texto.includes("fim da rota") || texto.includes("finalizada")) {
+        return { texto: "Parado", classe: "status-parado" };
+      }
+
+      if (texto.includes("conectado")) {
+        return { texto: "Conectado", classe: "status-ok" };
+      }
+
+      return { texto: payload || "Status recebido", classe: "status-ok" };
+    }
+
+    function atualizarStatusRobo(robo, payload) {
+      const statusCompleto = document.getElementById(robo.statusId);
+      const statusCard = document.getElementById(robo.statusCardId);
+      const statusClassificado = classificarStatusRobo(payload);
+
+      statusCompleto.textContent = payload;
+      statusCard.textContent = statusClassificado.texto;
+      statusCard.title = payload;
+      statusCard.classList.remove("status-ok", "status-rota", "status-parado", "status-off");
+      statusCard.classList.add(statusClassificado.classe);
+
+      document.getElementById("roboStatus").textContent = robo.nome + ": " + statusClassificado.texto;
     }
 
     function selecionarNo(no) {
@@ -509,7 +587,7 @@
         iluminarCaminho(caminho);
 
         document.getElementById("comandoInfo").textContent =
-          comandos.length ? comandos.join(" → ") : "Nenhum comando";
+          comandos.length ? montarComandoTexto(comandos) : "Nenhum comando";
       }
     }
 
@@ -539,18 +617,53 @@
       return [];
     }
 
-    function direcaoEntre(a, b) {
-      const p1 = coordenadas[a];
-      const p2 = coordenadas[b];
+    const direcoesTrechos = {
+      "A-P1": { saida: "Norte", chegada: "Norte" },
+      "P1-A": { saida: "Sul", chegada: "Sul" },
 
-      const dx = p2.x - p1.x;
-      const dy = p2.y - p1.y;
+      "B-P1": { saida: "Leste", chegada: "Leste" },
+      "P1-B": { saida: "Oeste", chegada: "Oeste" },
 
-      if (Math.abs(dx) > Math.abs(dy)) {
-        return dx > 0 ? "Leste" : "Oeste";
-      } else {
-        return dy > 0 ? "Sul" : "Norte";
-      }
+      "C-P1": { saida: "Oeste", chegada: "Oeste" },
+      "P1-C": { saida: "Leste", chegada: "Leste" },
+
+      "P1-P2": { saida: "Norte", chegada: "Norte" },
+      "P2-P1": { saida: "Sul", chegada: "Sul" },
+
+      "D-P2": { saida: "Leste", chegada: "Leste" },
+      "P2-D": { saida: "Oeste", chegada: "Oeste" },
+
+      "E-P2": { saida: "Oeste", chegada: "Oeste" },
+      "P2-E": { saida: "Leste", chegada: "Leste" },
+
+      "P2-P3": { saida: "Norte", chegada: "Norte" },
+      "P3-P2": { saida: "Sul", chegada: "Sul" },
+
+      "F-P3": { saida: "Leste", chegada: "Leste" },
+      "P3-F": { saida: "Oeste", chegada: "Oeste" },
+
+      "G-P3": { saida: "Oeste", chegada: "Oeste" },
+      "P3-G": { saida: "Leste", chegada: "Leste" },
+
+      // Pista real: saindo do P3 sobe e depois vai para a direita até o P4.
+      // No sentido contrário, sai do P4 para a esquerda e chega no P3 descendo.
+      "P3-P4": { saida: "Norte", chegada: "Leste" },
+      "P4-P3": { saida: "Oeste", chegada: "Sul" },
+
+      // Pista real: do P4 para I sobe e depois vai para a esquerda.
+      // De I para P4 vai para a direita e depois desce.
+      "P4-I": { saida: "Norte", chegada: "Oeste" },
+      "I-P4": { saida: "Leste", chegada: "Sul" },
+
+      // Pista real: do P4 para H desce e depois vai para a esquerda.
+      // De H para P4 vai para a direita e depois sobe.
+      "P4-H": { saida: "Sul", chegada: "Oeste" },
+      "H-P4": { saida: "Leste", chegada: "Norte" }
+    };
+
+    function dadosTrecho(a, b) {
+      const chave = `${a}-${b}`;
+      return direcoesTrechos[chave] || null;
     }
 
     function comandoRelativo(direcaoAtual, proximaDirecao) {
@@ -559,34 +672,76 @@
       const atual = ordem.indexOf(direcaoAtual);
       const proxima = ordem.indexOf(proximaDirecao);
 
-      let diff = proxima - atual;
+      if (atual === -1 || proxima === -1) {
+        return "frente";
+      }
 
+      let diff = proxima - atual;
       if (diff < 0) diff += 4;
 
-      if (diff === 0) return "Frente";
-      if (diff === 1) return "Direita";
-      if (diff === 3) return "Esquerda";
-      return "Retorno";
+      if (diff === 0) return "frente";
+      if (diff === 1) return "direita";
+      if (diff === 3) return "esquerda";
+      return "retorno";
     }
 
     function gerarComandos(caminho) {
       if (!caminho || caminho.length < 2) return [];
 
-      const comandos = [];
+      const primeiroTrecho = dadosTrecho(caminho[0], caminho[1]);
 
-      let direcaoAtual = direcaoEntre(caminho[0], caminho[1]);
+      if (!primeiroTrecho) {
+        console.warn("Trecho sem direção cadastrada:", caminho[0], caminho[1]);
+        return [];
+      }
 
-      comandos.push("Frente");
+      const comandos = ["frente"];
+
+      // Direção real em que o robô chega ao primeiro ponto/interseção.
+      let direcaoAtual = primeiroTrecho.chegada;
 
       for (let i = 1; i < caminho.length - 1; i++) {
-        const proximaDirecao = direcaoEntre(caminho[i], caminho[i + 1]);
-        const comando = comandoRelativo(direcaoAtual, proximaDirecao);
+        const atual = caminho[i];
+        const proximo = caminho[i + 1];
+        const proximoTrecho = dadosTrecho(atual, proximo);
 
+        if (!proximoTrecho) {
+          console.warn("Trecho sem direção cadastrada:", atual, proximo);
+          comandos.push("frente");
+          continue;
+        }
+
+        const comando = comandoRelativo(direcaoAtual, proximoTrecho.saida);
         comandos.push(comando);
-        direcaoAtual = proximaDirecao;
+
+        // Depois de atravessar o trecho, essa é a direção real de chegada ao próximo ponto.
+        direcaoAtual = proximoTrecho.chegada;
       }
 
       return comandos;
+    }
+
+    function montarComandosFinais(comandos) {
+      const comandosLimpos = comandos
+        .map(comando => String(comando).trim().toLowerCase())
+        .filter(comando => comando.length > 0);
+
+      while (comandosLimpos.length && comandosLimpos[comandosLimpos.length - 1] === "parar") {
+        comandosLimpos.pop();
+      }
+
+      while (comandosLimpos.length && comandosLimpos[comandosLimpos.length - 1] === "retorno") {
+        comandosLimpos.pop();
+      }
+
+      comandosLimpos.push("retorno");
+      comandosLimpos.push("parar");
+
+      return comandosLimpos;
+    }
+
+    function montarComandoTexto(comandos) {
+      return montarComandosFinais(comandos).join(", ");
     }
 
     function atualizarInterface() {
@@ -684,82 +839,169 @@
       iluminarCaminho(caminho);
 
       document.getElementById("comandoInfo").textContent =
-        comandos.length ? comandos.join(" → ") : "Nenhum comando";
+        comandos.length ? montarComandoTexto(comandos) : "Nenhum comando";
     }
 
     function conectarMQTT() {
-      const clientId = "site_robo_" + Math.random().toString(16).substring(2, 10);
-
-      mqttClient = new Paho.Client(MQTT_HOST, MQTT_PORT, MQTT_PATH, clientId);
-
-      mqttClient.onConnectionLost = function () {
-        mqttConectado = false;
-        atualizarStatusMQTT("Desconectado");
-        document.getElementById("ultimaMensagemRecebida").textContent = "Conexão perdida";
-      };
-
-      mqttClient.onMessageArrived = function (message) {
-        const payload = message.payloadString;
-        document.getElementById("ultimaMensagemRecebida").textContent = message.destinationName + ": " + payload;
-
-        if (message.destinationName === TOPICO_STATUS) {
-          document.getElementById("roboStatus").textContent = payload;
-        }
-      };
-
-      atualizarStatusMQTT("Conectando...");
-
-      mqttClient.connect({
-        useSSL: true,
-        timeout: 5,
-        onSuccess: function () {
-          mqttConectado = true;
-          atualizarStatusMQTT("Conectado");
-          document.getElementById("roboStatus").textContent = "Aguardando mensagem do robô";
-          mqttClient.subscribe(TOPICO_STATUS);
-        },
-        onFailure: function (erro) {
-          mqttConectado = false;
-          atualizarStatusMQTT("Falha na conexão");
-          document.getElementById("ultimaMensagemRecebida").textContent = "Erro ao conectar";
-          console.error(erro);
-        }
-      });
-    }
-
-    function enviarRotaMQTT() {
-      if (!mqttConectado || !mqttClient) {
-        alert("Conecte ao MQTT primeiro.");
+      if (mqttClient && mqttConectado) {
+        atualizarStatusMQTT("Conectado");
         return;
       }
 
+      const clientId = "site_robo_" + Math.random().toString(16).substring(2, 10);
+
+      atualizarStatusMQTT("Conectando...");
+
+      mqttClient = mqtt.connect(broker, {
+        clientId: clientId,
+        clean: true,
+        connectTimeout: 4000,
+        reconnectPeriod: 3000
+      });
+
+      mqttClient.on("connect", function () {
+        mqttConectado = true;
+        atualizarStatusMQTT("Conectado");
+
+        Object.values(robos).forEach(robo => {
+          mqttClient.subscribe(robo.topicoStatus);
+        });
+
+        document.getElementById("statusSamuelCard").textContent = "Aguardando status MQTT";
+        document.getElementById("statusFrancieleCard").textContent = "Aguardando status MQTT";
+        document.getElementById("roboStatus").textContent = "Conectado ao broker. Aguardando status dos robôs.";
+
+        // Segurança: garante que os robôs iniciem parados quando o painel conecta.
+        enviarPararParaTodos(false);
+      });
+
+      mqttClient.on("message", function (topic, message) {
+        const payload = message.toString();
+
+        document.getElementById("ultimaMensagemRecebida").textContent = topic + ": " + payload;
+
+        Object.values(robos).forEach(robo => {
+          if (topic === robo.topicoStatus) {
+            atualizarStatusRobo(robo, payload);
+          }
+        });
+      });
+
+      mqttClient.on("reconnect", function () {
+        mqttConectado = false;
+        atualizarStatusMQTT("Reconectando...");
+      });
+
+      mqttClient.on("close", function () {
+        mqttConectado = false;
+        atualizarStatusMQTT("Desconectado");
+      });
+
+      mqttClient.on("offline", function () {
+        mqttConectado = false;
+        atualizarStatusMQTT("Offline");
+      });
+
+      mqttClient.on("error", function (erro) {
+        mqttConectado = false;
+        atualizarStatusMQTT("Erro na conexão");
+        document.getElementById("ultimaMensagemRecebida").textContent = erro.message || "Erro MQTT";
+        console.error(erro);
+      });
+    }
+
+    function publicar(topico, payload) {
+      if (!mqttConectado || !mqttClient) {
+        alert("Conecte ao MQTT primeiro.");
+        return false;
+      }
+
+      mqttClient.publish(topico, payload, { qos: 0, retain: false }, function (erro) {
+        if (erro) {
+          document.getElementById("ultimaMensagemRecebida").textContent = "Erro ao publicar em " + topico;
+          console.error(erro);
+        }
+      });
+
+      document.getElementById("ultimoEnvio").textContent = topico + ": " + payload;
+      console.log("Publicado", topico, payload);
+      return true;
+    }
+
+    function enviarRotaParaRobo(idRobo) {
       if (!ultimoCaminho.length || !ultimosComandos.length) {
         alert("Selecione uma origem e um destino primeiro.");
         return;
       }
 
-      const comandoTexto = ultimosComandos.join(",");
-
-      const mensagemComandos = new Paho.Message(comandoTexto);
-      mensagemComandos.destinationName = TOPICO_COMANDOS;
-      mqttClient.send(mensagemComandos);
-      document.getElementById("ultimoEnvio").textContent = TOPICO_COMANDOS + ": " + comandoTexto;
+      const robo = robos[idRobo];
+      const comandosFinais = montarComandosFinais(ultimosComandos);
+      const comandoTexto = comandosFinais.join(", ");
 
       const payloadJson = {
-        robo: "robo1",
+        robo: idRobo,
+        nome: robo.nome,
         origem: origem,
         destino: destino,
         rota: ultimoCaminho,
-        comandos: ultimosComandos,
+        comandos: comandosFinais,
         comandoTexto: comandoTexto
       };
 
-      const mensagemJson = new Paho.Message(JSON.stringify(payloadJson));
-      mensagemJson.destinationName = TOPICO_ROTA;
-      mqttClient.send(mensagemJson);
+      const enviouComandos = publicar(robo.topicoComandos, comandoTexto);
+      const enviouJson = publicar(robo.topicoRota, JSON.stringify(payloadJson));
 
-      document.getElementById("roboStatus").textContent = "Rota enviada, aguardando confirmação";
-      alert("Rota enviada para o robô:\n" + comandoTexto);
+      if (enviouComandos && enviouJson) {
+        const statusCard = document.getElementById(robo.statusCardId);
+        statusCard.textContent = "Rota enviada";
+        statusCard.classList.remove("status-ok", "status-rota", "status-parado", "status-off");
+        statusCard.classList.add("status-rota");
+
+        document.getElementById("roboStatus").textContent =
+          "Rota enviada para " + robo.nome + ": " + comandoTexto;
+      }
+    }
+
+    function enviarRotaParaTodos() {
+      if (!ultimoCaminho.length || !ultimosComandos.length) {
+        alert("Selecione uma origem e um destino primeiro.");
+        return;
+      }
+
+      enviarRotaParaRobo("robo1");
+      enviarRotaParaRobo("robo2");
+    }
+
+    function enviarPararParaRobo(idRobo, mostrarAlerta = true) {
+      const robo = robos[idRobo];
+      const enviou = publicar(robo.topicoComandos, "parar");
+
+      if (enviou) {
+        const statusCard = document.getElementById(robo.statusCardId);
+        statusCard.textContent = "Parado";
+        statusCard.classList.remove("status-ok", "status-rota", "status-parado", "status-off");
+        statusCard.classList.add("status-parado");
+
+        document.getElementById("roboStatus").textContent =
+          "PARAR enviado para " + robo.nome + ".";
+
+        if (mostrarAlerta) {
+          alert("PARAR enviado para " + robo.nome + ".");
+        }
+      }
+    }
+
+    function enviarPararParaTodos(mostrarAlerta = true) {
+      const ok1 = publicar(robos.robo1.topicoComandos, "parar");
+      const ok2 = publicar(robos.robo2.topicoComandos, "parar");
+
+      if (ok1 && ok2) {
+        document.getElementById("roboStatus").textContent = "PARAR enviado para os 2 robôs.";
+
+        if (mostrarAlerta) {
+          alert("PARAR enviado para os 2 robôs.");
+        }
+      }
     }
   </script>
 </body>
